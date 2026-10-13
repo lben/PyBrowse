@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pybrowse"
+version = "0.1.0"
+description = "A text-only web browser for the terminal, built for reading sites like Reddit as plain text."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "wcwidth>=0.2.6",
+    "windows-curses>=2.3.2; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pexpect>=4.8; sys_platform != 'win32'", "pyte>=0.8"]
+
+[project.scripts]
+pybrowse = "pybrowse.app:main"
+
+[tool.setuptools]
+packages = ["pybrowse"]
+
+[tool.pytest.ini_options]
+markers = ["live: needs internet access (run with: pytest -m live)"]
+addopts = "-m 'not live'"
