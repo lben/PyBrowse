@@ -81,7 +81,7 @@ class Renderer:
         if parts.hostname.endswith("duckduckgo.com") and parts.path == "/l/":
             target = parse_qs(parts.query).get("uddg")
             if target and target[0].startswith(("http://", "https://")):
-                return target[0]
+                return sanitize(target[0])  # percent-decoding can reintroduce control bytes
         return url
 
     def text(self, text: str) -> None:

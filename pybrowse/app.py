@@ -111,8 +111,9 @@ class UI:
         h, w = self.size()
         if not 0 <= y < h or x >= w:
             return
+        # Last line of defence: nothing reaches the terminal with control characters.
         # Never write the bottom-right cell: curses raises when the cursor would scroll.
-        text = clip(text, w - x - (1 if y == h - 1 else 0))
+        text = clip(sanitize(text).replace("\n", " ").replace("\t", " "), w - x - (1 if y == h - 1 else 0))
         try:
             self.scr.addstr(y, x, text)
         except curses.error:
@@ -481,12 +482,12 @@ def dump(browser: Browser, address: str, width: int) -> int:
     if doc is None:
         print("Timed out.", file=sys.stderr)
         return 1
-    print("\n".join(doc.lines(width)))
+    print(sanitize("\n".join(doc.lines(width))))  # sanitize keeps newlines and tabs only
     links = [item for item in doc.links if hasattr(item, "url")]
     if links:
         print("\nLinks")
         for item in links:
-            print(f"  {item.number}. {item.url}")
+            print(f"  {item.number}. {sanitize(item.url)}")
     return 0
 
 

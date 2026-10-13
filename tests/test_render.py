@@ -79,3 +79,8 @@ def test_icon_link_with_blank_accessible_name_still_renders_the_page():
     doc, out = lines(html)
     assert out == ["Article text.", "", "link[1]"]
     assert "code" in "\n".join(lines('<a href="/x"><pre>code</pre></a>')[1])
+
+
+def test_decoded_redirect_targets_cannot_carry_control_sequences():
+    doc, _ = lines('<a href="https://duckduckgo.com/l/?uddg=https://evil.example/%1b]0;X%07%1b[2Jx%c2%9b">go</a>')
+    assert doc.links[0].url == "https://evil.example/]0;X[2Jx"
