@@ -65,3 +65,17 @@ def test_deeply_nested_markup_does_not_crash():
     html = "<div>" * 5000 + "deep" + "</div>" * 5000 + "<b>" * 3000 + "bold"
     doc, out = lines(html)
     assert "deep" in "\n".join(out) and "bold" in "\n".join(out)
+
+
+def test_form_control_attributes_cannot_inject_terminal_control_sequences():
+    html = ('<input name="a\x1b]0;PWNED\x07b"><input type="image" alt="c\x1b[2Jd">'
+            '<button value="e\x1b[31mf">&#8594;</button><select name="s"><option>g\x9bh</option></select>')
+    _, out = lines(html)
+    assert out and not any(ord(c) < 32 or 127 <= ord(c) < 160 for line in out for c in line), out
+
+
+def test_icon_link_with_blank_accessible_name_still_renders_the_page():
+    html = '<p>Article text.</p><p><a href="/home" aria-label=" "><img src="logo.png" alt=""></a></p>'
+    doc, out = lines(html)
+    assert out == ["Article text.", "", "link[1]"]
+    assert "code" in "\n".join(lines('<a href="/x"><pre>code</pre></a>')[1])

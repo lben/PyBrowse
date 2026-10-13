@@ -270,10 +270,10 @@ class Renderer:
                 link, pieces, _ = self.anchor
                 link.text = "".join(pieces).strip()
                 if not link.text:
-                    link.text = collapse(tag.get("aria-label") or tag.get("title") or "link").strip()
+                    link.text = collapse(tag.get("aria-label") or tag.get("title") or "").strip() or "link"
                     self.text(link.text)
                 self.anchor = None
-                trailing = isinstance(self.parts[-1], str) and self.parts[-1].endswith(" ")
+                trailing = bool(self.parts) and isinstance(self.parts[-1], str) and self.parts[-1].endswith(" ")
                 if trailing:  # keep the number right after the link text: "Hot[4] New[5]"
                     self.parts[-1] = self.parts[-1].rstrip()
                 self.parts.append(self._number(link))

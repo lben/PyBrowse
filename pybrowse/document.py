@@ -109,6 +109,10 @@ class Field:
     number: int = 0
 
     def display(self) -> str:
+        # Labels and values come from page attributes or typed text: never trust them.
+        return collapse(self._display())
+
+    def _display(self) -> str:
         if self.kind in ("text", "textarea"):
             shown = self.value or (f"({self.label})" if self.label else "")
             if len(shown) > 40:
