@@ -146,3 +146,35 @@ def test_proxy_setting_is_validated():
     for bad in ("socks5://proxy.corp.test:1080", "http://", "not a proxy"):
         with pytest.raises(ValueError):
             validate("proxy", bad)
+
+
+def test_configured_proxy_wins_over_system_proxy_settings(site, proxy, make_browser, monkeypatch):
+    # On Windows the system proxy comes from the registry; the variables stand in for it here.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")  # nothing listens there
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    site.page("/page", "<title>Via configured proxy</title>")
+    b = make_browser(proxy=proxy.url.replace("http://", "http://user:s3cret@"))
+    assert wait(b, b.new_tab(site.url + "/page")).title == "Via configured proxy"
+    assert proxy.requests == [site.url + "/page"]
+
+
+def test_name_lookup_failures_say_which_server_could_not_be_found(site, make_browser, monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_PROXY", "*")  # no system proxy either
+    b = make_browser(proxy="http://proxy.pybrowse-test.invalid:8080")
+    text = text_of(wait(b, b.new_tab(site.url + "/page")))
+    assert "could not find the proxy server proxy.pybrowse-test.invalid" in text
+    assert "Using proxy http://proxy.pybrowse-test.invalid:8080" in text
+
+    # A broken proxy breaks every Reddit mirror alike: report it once instead of trying them all.
+    b.config.update({"reddit_frontends": ["https://a.pybrowse-test.invalid", "https://b.pybrowse-test.invalid"]})
+    text = text_of(wait(b, b.new_tab("https://www.reddit.com/r/test/")))
+    assert text.count("could not find the proxy server") == 1 and "mirrors" not in text
+
+    b2 = make_browser(proxy="")
+    text = text_of(wait(b2, b2.new_tab("http://site.pybrowse-test.invalid/")))
+    assert "could not find the server site.pybrowse-test.invalid" in text
+    assert "No proxy is in use" in text and "press c and set proxy" in text

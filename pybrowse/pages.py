@@ -17,7 +17,7 @@ HELP = """\
 Reading
   Up/Down, j/k          scroll one line
   PgDn/Space, PgUp/b    scroll one screen
-  Home/g, End/G         top / bottom of the page
+  g, End/G              top / bottom of the page
   /                     find text on the page; n / N next / previous match
 
 Links and forms (every link and form field has a number like [12])
@@ -30,9 +30,11 @@ Going places
   o                     open an address, r/subreddit, or search the web
   O                     edit the current address
   s                     search the web
+  Home                  home page
   Left/h/Backspace      back
   Right/l               forward
-  r                     reload        Esc  stop loading
+  r                     reload
+  Esc                   cancel: stop loading, close a prompt, or leave help/settings/bookmarks
   e                     open the current page in your system browser
 
 Tabs

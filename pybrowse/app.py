@@ -29,6 +29,16 @@ CTRL_C = "\x03"
 ENTER_KEYS = ("\n", "\r")  # plus curses.KEY_ENTER and, on Windows, PADENTER (see _is_enter)
 BACKSPACE_KEYS = ("\x7f", "\b")
 DIGITS = tuple("0123456789")
+# What follows ESC for common keys in xterm, VT220 and Windows Terminal style terminals.
+ESCAPE_SEQUENCES = {} if curses is None else {
+    **{prefix + code: key for prefix in ("[", "O") for code, key in (
+        ("A", curses.KEY_UP), ("B", curses.KEY_DOWN), ("C", curses.KEY_RIGHT), ("D", curses.KEY_LEFT),
+        ("H", curses.KEY_HOME), ("F", curses.KEY_END))},
+    "[1~": curses.KEY_HOME, "[7~": curses.KEY_HOME, "[4~": curses.KEY_END, "[8~": curses.KEY_END,
+    "[3~": curses.KEY_DC, "[5~": curses.KEY_PPAGE, "[6~": curses.KEY_NPAGE, "[Z": curses.KEY_BTAB,
+}
+# Home on the main keys, and on the Windows number pad with Num Lock off.
+HOME_KEYS = tuple(k for k in (getattr(curses, "KEY_HOME", None), getattr(curses, "KEY_A1", None)) if k)
 
 
 class UI:
@@ -62,7 +72,7 @@ class UI:
                 self._safe(self.draw)
                 dirty = False
             try:
-                key = self.scr.get_wch()
+                key = self.read_key()
             except curses.error:
                 continue  # no key within the timeout
             except KeyboardInterrupt:
@@ -75,6 +85,38 @@ class UI:
             except Exception as exc:  # never crash on a key press; report and continue
                 log.exception("handling key %r", key)
                 self.status = f"Error: {exc} (details in pybrowse.log)"
+
+    def read_key(self):
+        """Next key press. Raises curses.error when none arrives within the timeout.
+
+        curses only recognises the key sequences listed for $TERM, but many terminals send
+        other common forms (Home as ESC [ H, arrows as ESC [ A, ...). Those would arrive as
+        a lone Esc followed by ordinary letters, so they are decoded here.
+        """
+        key = self.scr.get_wch()
+        if key != ESC:
+            return key
+        seq = ""
+        self.scr.timeout(30)  # the rest of a sequence arrives at once; a real Esc press stands alone
+        try:
+            while len(seq) < 4:
+                try:
+                    ch = self.scr.get_wch()
+                except curses.error:
+                    break
+                if not isinstance(ch, str):
+                    curses.ungetch(ch)
+                    break
+                seq += ch
+                if seq in ESCAPE_SEQUENCES:
+                    return ESCAPE_SEQUENCES[seq]
+                if not any(known.startswith(seq) for known in ESCAPE_SEQUENCES):
+                    break
+        finally:
+            self.scr.timeout(100)
+        for ch in reversed(seq):  # not a key sequence: hand the characters back
+            curses.unget_wch(ch)
+        return ESC
 
     def _safe(self, fn) -> None:
         try:
@@ -218,7 +260,7 @@ class UI:
                     pass
                 self.scr.refresh()
                 try:
-                    key = self.scr.get_wch()
+                    key = self.read_key()
                 except curses.error:
                     continue
                 if _is_enter(key):
@@ -299,7 +341,9 @@ class UI:
             self.scroll(max(1, view - 1))
         elif key in (curses.KEY_PPAGE, "b"):
             self.scroll(-max(1, view - 1))
-        elif key in (curses.KEY_HOME, "g"):
+        elif key in HOME_KEYS:
+            b.navigate(tab, b.config.get("homepage"))
+        elif key == "g":
             self.scroll(-10**9)
         elif key in (curses.KEY_END, "G"):
             self.scroll(10**9)
@@ -334,8 +378,12 @@ class UI:
             b.navigate(tab, "about:tabs")
         elif key == "r":
             b.reload(tab)
-        elif key == ESC:
-            b.stop(tab)
+        elif key == ESC:  # cancel: stop loading, or leave a built-in page such as help or settings
+            entry = tab.current
+            if tab.loading:
+                b.stop(tab)
+            elif entry and entry.url.startswith("about:") and entry.url != "about:home" and tab.index > 0:
+                b.back(tab)
         elif key == "e":
             entry = tab.current
             self.external(entry.url if entry else None)
@@ -432,13 +480,27 @@ class UI:
             if url is not None:
                 self.status = "Only web addresses can be opened in the system browser."
             return
-        try:
-            opened = webbrowser.open(url)
-        except Exception as exc:
-            opened = False
-            log.warning("could not open %s: %s", url, exc)
+        opened = open_external(url)
         self.scr.clear()  # a console browser could have drawn over the screen
         self.status = f"Opened in system browser: {url}" if opened else "Could not open a system browser."
+
+
+MAC_OPEN = "/usr/bin/open"
+
+
+def open_external(url: str) -> bool:
+    """Open `url` in the system browser. Returns False if that failed."""
+    try:
+        if sys.platform == "darwin":
+            # Not webbrowser: it forks, and on macOS a forked child can crash in the system
+            # network framework once the process has read the proxy settings and seen a failed
+            # DNS lookup. posix_spawn does not run the fork handlers that crash.
+            pid = os.posix_spawn(MAC_OPEN, [MAC_OPEN, url], os.environ)
+            return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) == 0
+        return webbrowser.open(url)
+    except Exception as exc:
+        log.warning("could not open %s: %s", url, exc)
+        return False
 
 
 def _is_enter(key) -> bool:

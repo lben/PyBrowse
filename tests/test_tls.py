@@ -41,3 +41,13 @@ def test_ca_bundle_must_be_an_existing_file(tmp_path):
         validate("ca_bundle", str(tmp_path / "missing.pem"))
     assert validate("ca_bundle", "") == ""
     assert validate("ca_bundle", CERT) == CERT
+
+
+def test_ca_bundle_setting_wins_over_the_certificate_environment_variable(https_site, make_browser,
+                                                                          monkeypatch):
+    import certifi
+
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", certifi.where())  # trusts public CAs only
+    https_site.page("/secure", "<title>Secure</title>")
+    b = make_browser(ca_bundle=CERT)
+    assert wait(b, b.new_tab(https_site.url + "/secure")).title == "Secure"

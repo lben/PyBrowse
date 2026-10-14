@@ -100,6 +100,8 @@ class Loader:
                 failures.append(f"  {host}: {exc}")
                 if exc.hint and exc.hint not in hints:
                     hints.append(exc.hint)
+                if exc.proxy_failed:
+                    return error_page(url, f"{exc}\n\n{exc.hint}")
                 continue
             reason = reddit.unusable(resp.status, resp.body)
             if reason:

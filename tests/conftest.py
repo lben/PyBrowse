@@ -60,6 +60,17 @@ class Site:
         self.routes[path] = (status, ctype, html.encode() if isinstance(html, str) else html)
 
 
+@pytest.fixture(autouse=True)
+def no_system_proxy_settings(monkeypatch):
+    """Keep tests independent of this machine's proxy settings.
+
+    With any *_proxy variable set, Python reads proxies from the environment instead of
+    the OS. Reading the macOS settings in the test process, plus a failed DNS lookup, makes
+    every later fork crash (see open_external), which would break the terminal tests.
+    """
+    monkeypatch.setenv("NO_PROXY", "pybrowse-tests.invalid")
+
+
 @pytest.fixture
 def site():
     s = Site()

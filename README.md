@@ -84,7 +84,7 @@ which is handy for piping into other tools.
 | --- | --- |
 | Up/Down, `j`/`k` | scroll one line |
 | PgDn/Space, PgUp/`b` | scroll one screen |
-| Home/`g`, End/`G` | top / bottom of page |
+| `g`, End/`G` | top / bottom of page |
 | `12` Enter | follow link 12, or edit/toggle/press form field 12 |
 | `12` `t` | open link 12 in a new tab |
 | `12` `e` | open link 12 in your normal browser |
@@ -92,8 +92,10 @@ which is handy for piping into other tools.
 | `o` | open an address, `r/subreddit`, or search the web |
 | `O` | edit the current address |
 | `s` | search the web |
+| Home | home page |
 | Left/`h`/Backspace, Right/`l` | back, forward |
-| `r`, Esc | reload, stop loading |
+| `r` | reload |
+| Esc | cancel: stop loading, close a prompt, or leave help/settings/bookmarks/history |
 | `e` | open the current page in your normal browser |
 | `/`, `n`, `N` | find on page, next, previous |
 | `t`, `x` | new tab, close tab |

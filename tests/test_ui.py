@@ -150,3 +150,50 @@ def test_refuses_to_start_without_a_terminal(home):
                             stdin=subprocess.DEVNULL, env={"PYBROWSE_HOME": str(home), "PATH": "/usr/bin:/bin"})
     assert result.returncode == 2
     assert "Terminal tab" in result.stderr
+
+
+def test_home_backspace_and_escape_keys(home, pages):
+    configure(home, pages)
+    pages.routes["/slow"] = lambda h: (time.sleep(8), h.send_response(200), h.end_headers())
+    t = Terminal(home, [pages.url + "/second"])
+    t.wait_for("You reached the second page.")
+    t.keys("\x1b[H")  # Home key: the home page
+    t.wait_for("Start page")
+    t.keys("\x7f")  # Backspace: back to where we were
+    t.wait_for("You reached the second page.")
+
+    t.keys("?")
+    t.wait_for("Links and forms")
+    t.keys("\x1b", 0.5)  # Esc leaves the help page
+    t.wait_for("You reached the second page.")
+
+    t.keys("o")
+    t.keys(pages.url + "/slow\r")
+    t.wait_for("Loading")
+    t.keys("\x1b", 0.5)  # Esc stops a slow load
+    t.wait_for("Stopped.")
+    assert "You reached the second page." in t.text
+    t.keys("\x03")
+    assert t.exit_status() == 0
+    assert_no_logged_errors(home)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific crash")
+def test_system_browser_still_opens_after_a_failed_lookup_on_macos():
+    import subprocess
+
+    # Run in a fresh process: the trigger breaks fork() for the rest of that process.
+    script = """
+import socket, urllib.request
+from pybrowse import app
+urllib.request.getproxies(); urllib.request.proxy_bypass("example.com")  # read macOS proxy settings
+try:
+    socket.getaddrinfo("nosuch.pybrowse-tests.invalid", 80)
+except socket.gaierror:
+    pass
+app.MAC_OPEN = "/usr/bin/true"  # stands in for /usr/bin/open so no browser window appears
+print(app.open_external("https://example.com/"))
+"""
+    env = {"PATH": "/usr/bin:/bin", "PYBROWSE_HOME": "/tmp"}
+    result = subprocess.run([sys.executable, "-c", script], cwd=str(ROOT), env=env, capture_output=True, text=True)
+    assert result.stdout.strip() == "True", result.stderr
