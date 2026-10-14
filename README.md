@@ -151,6 +151,7 @@ Set `PYBROWSE_HOME` to use another folder.
 | `history_limit` | `100` | back/forward entries kept per tab |
 | `user_agent` | `PyBrowse/0.1 ...` | sent to websites |
 | `proxy` | empty | proxy for all connections; empty uses the system proxy settings |
+| `ca_bundle` | empty | certificate file for networks that inspect HTTPS; empty uses the built-in certificates |
 
 ### Behind a corporate proxy
 
@@ -164,9 +165,10 @@ When `proxy` is empty, PyBrowse uses the `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
 environment variables, or on Windows and macOS the system proxy settings.
 
 If pages fail with "secure connection failed", your network probably inspects HTTPS
-traffic with its own certificate. Point the `REQUESTS_CA_BUNDLE` environment
-variable at your organisation's certificate file (a `.pem`/`.crt` file your IT
-department can provide) before starting PyBrowse.
+traffic with its own certificate. Set `ca_bundle` to your organisation's certificate
+file (a `.pem`/`.crt` file your IT department can provide), for example
+`C:\certs\company.pem` or `~/certs/company.pem`. The `REQUESTS_CA_BUNDLE`
+environment variable also works when `ca_bundle` is empty.
 
 Bookmarks (`bookmarks.json`), cookies (`cookies.txt`) and a small rotating log
 (`pybrowse.log`) live in the same folder.

@@ -1,3 +1,4 @@
+import ssl
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -14,7 +15,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class Site:
     """A local web server. Tests register routes: path -> (status, content type, body)."""
 
-    def __init__(self):
+    def __init__(self, tls=False):
         self.routes = {}
         self.requests = []
         site = self
@@ -48,7 +49,11 @@ class Site:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        if tls:  # self-signed certificate for 127.0.0.1, see fixtures/localhost-cert.pem
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(FIXTURES / "localhost-cert.pem", FIXTURES / "localhost-key.pem")
+            self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+        self.url = f"{'https' if tls else 'http'}://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def page(self, path, html, status=200, ctype="text/html; charset=utf-8"):

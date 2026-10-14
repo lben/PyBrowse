@@ -81,13 +81,13 @@ class Loader:
                 return self._load_reddit(url, path, method, data, instances, cancelled)
             return to_document(self.fetcher.fetch(url, method, data, cancelled), self.config.get("max_page_mb"))
         except FetchError as exc:
-            return error_page(url, str(exc))
+            return error_page(url, f"{exc}\n\n{exc.hint}" if exc.hint else str(exc))
         except Exception as exc:  # a bug must never take the browser down
             log.exception("loading %s", url)
             return error_page(url, f"Internal error: {exc!r}\nDetails are in pybrowse.log.")
 
     def _load_reddit(self, url, path, method, data, instances, cancelled) -> Document:
-        failures = []
+        failures, hints = [], []
         for instance in sorted(instances, key=lambda inst: inst != self.preferred):
             host = urlsplit(instance).hostname
             if cancelled():
@@ -98,6 +98,8 @@ class Loader:
                 if str(exc) == "cancelled":
                     raise
                 failures.append(f"  {host}: {exc}")
+                if exc.hint and exc.hint not in hints:
+                    hints.append(exc.hint)
                 continue
             reason = reddit.unusable(resp.status, resp.body)
             if reason:
@@ -115,7 +117,7 @@ class Loader:
             return doc
         return error_page(url, "\n".join([
             "Reddit blocks direct access, so PyBrowse reads it through Redlib mirrors.",
-            "None of the configured mirrors could load this page:", *failures, "",
+            "None of the configured mirrors could load this page:", *failures, "", *hints,
             "Mirrors come and go. Press c to edit reddit_frontends in the settings",
             "(see https://github.com/redlib-org/redlib-instances for a current list).",
         ]))

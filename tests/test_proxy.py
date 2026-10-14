@@ -103,12 +103,12 @@ def test_proxy_refusal_and_unreachable_proxy_are_explained(site, proxy, make_bro
     b = make_browser(proxy=proxy.url)  # no password
     text = text_of(wait(b, b.new_tab(site.url + "/page")))
     assert "the proxy asked for a username and password" in text
-    assert "using proxy " + proxy.url in text and "press c" in text
+    assert "Using proxy " + proxy.url in text and "Press c" in text
 
     b2 = make_browser(proxy="http://user:pw@127.0.0.1:9")  # nothing listens on the discard port
     text = text_of(wait(b2, b2.new_tab(site.url + "/page")))
     assert "proxy error" in text
-    assert "using proxy http://user:***@127.0.0.1:9" in text and "pw@" not in text
+    assert "Using proxy http://user:***@127.0.0.1:9" in text and "pw@" not in text
 
 
 def test_settings_page_masks_the_proxy_password_but_keeps_it_on_save(home, make_browser):

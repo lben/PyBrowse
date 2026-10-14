@@ -20,7 +20,14 @@ log = logging.getLogger("pybrowse")
 
 
 class FetchError(Exception):
-    """A page could not be fetched; the message is shown to the user."""
+    """A page could not be fetched; the message is shown to the user.
+
+    `hint` is advice on fixing the cause (shown once even when several servers failed).
+    """
+
+    def __init__(self, message: str, hint: str = ""):
+        super().__init__(message)
+        self.hint = hint
 
 
 @dataclass
@@ -63,6 +70,8 @@ class Fetcher:
         proxy = self.config.get("proxy")
         # Empty keeps requests' default: the HTTP(S)_PROXY variables or the OS proxy settings.
         session.proxies = {"http": proxy, "https": proxy} if proxy else {}
+        # True means the built-in certificates, or REQUESTS_CA_BUNDLE when that is set.
+        session.verify = self.config.get("ca_bundle") or True
         return session
 
     def fetch(self, url: str, method: str = "GET", data=None, cancelled=lambda: False) -> Response:
@@ -79,7 +88,7 @@ class Fetcher:
             with self._session().request(method, url, data=data, timeout=(timeout, timeout),
                                          stream=True, allow_redirects=True) as resp:
                 if resp.status_code == 407:  # a plain-http request refused by the proxy itself
-                    raise FetchError(self._proxy_hint("the proxy asked for a username and password"))
+                    raise FetchError("the proxy asked for a username and password", self._proxy_hint())
                 chunks, size, truncated = [], 0, False
                 for chunk in resp.iter_content(64 * 1024):
                     chunks.append(chunk)
@@ -103,23 +112,27 @@ class Fetcher:
         except requests.exceptions.TooManyRedirects:
             raise FetchError("too many redirects") from None
         except requests.exceptions.SSLError as exc:
-            raise FetchError(f"secure connection failed: {_root_cause(exc)}\n"
-                             "If your network inspects HTTPS traffic, point the REQUESTS_CA_BUNDLE "
-                             "environment variable at your organisation's certificate file.") from None
+            raise FetchError(f"secure connection failed: {_root_cause(exc)}", self._tls_hint()) from None
         except requests.exceptions.ProxyError as exc:
-            raise FetchError(self._proxy_hint(f"proxy error: {_root_cause(exc)}")) from None
+            raise FetchError(f"proxy error: {_root_cause(exc)}", self._proxy_hint()) from None
         except requests.exceptions.ConnectionError as exc:
-            raise FetchError(self._proxy_hint(f"could not connect: {_root_cause(exc)}")) from None
-        except (requests.exceptions.RequestException, ValueError) as exc:
-            raise FetchError(f"request failed: {exc}") from None
+            raise FetchError(f"could not connect: {_root_cause(exc)}", self._proxy_hint()) from None
+        except (requests.exceptions.RequestException, ValueError, OSError) as exc:
+            # OSError: requests could not read the ca_bundle file
+            raise FetchError(f"request failed: {exc}", self._tls_hint()) from None
         self.save_cookies()
         return result
 
-    def _proxy_hint(self, message: str) -> str:
+    def _proxy_hint(self) -> str:
         proxy = self.config.get("proxy")
-        if not proxy:
-            return message
-        return f"{message}\n(using proxy {mask_password(proxy)}; press c to change the proxy setting)"
+        return f"Using proxy {mask_password(proxy)}. Press c to change the proxy setting." if proxy else ""
+
+    def _tls_hint(self) -> str:
+        bundle = self.config.get("ca_bundle")
+        if bundle:
+            return f"HTTPS sites are verified with the certificate file {bundle}. Press c to change ca_bundle."
+        return ("If your network inspects HTTPS traffic with its own certificate, press c and set "
+                "ca_bundle to your organisation's certificate file.")
 
     def save_cookies(self) -> None:
         with self._save_lock:

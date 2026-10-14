@@ -40,6 +40,9 @@ SETTINGS: dict[str, tuple[object, str]] = {
     "proxy": ("", "Proxy for all connections, e.g. http://proxy.example.com:8080 or "
                   "http://user:password@proxy.example.com:8080. Empty uses the system proxy settings "
                   "(HTTP_PROXY/HTTPS_PROXY variables, or the Windows proxy settings)."),
+    "ca_bundle": ("", "Certificate file (.pem/.crt) used to verify HTTPS sites, for networks that inspect "
+                      "HTTPS traffic with their own certificate. Empty uses the built-in certificates "
+                      "(or the REQUESTS_CA_BUNDLE variable if set)."),
 }
 _INT_RANGES = {"width": (0, 1000), "timeout": (1, 300), "max_page_mb": (1, 100), "history_limit": (1, 10000)}
 
@@ -133,6 +136,10 @@ def validate(name: str, value):
             text = "http://" + text  # corporate proxies are usually given as host:port
         if not urlsplit(text).scheme in ("http", "https") or not _http_url(text):
             raise ValueError("proxy must be an http(s) address like http://proxy.example.com:8080")
+    if name == "ca_bundle" and text:
+        text = os.path.abspath(os.path.expanduser(text))
+        if not os.path.isfile(text):
+            raise ValueError(f"ca_bundle file not found: {text}")
     return text
 
 
