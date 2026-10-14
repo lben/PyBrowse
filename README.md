@@ -38,12 +38,24 @@ Requires Python 3.10 or newer.
 ```
 git clone https://github.com/lben/PyBrowse.git
 cd PyBrowse
-pip install -r requirements.txt
-python main.py
+./pybrowse.sh          # macOS / Linux
+pybrowse.cmd           # Windows (Command Prompt or PowerShell)
 ```
 
-On Windows, `requirements.txt` also installs `windows-curses`, which provides the
-terminal library Python lacks there.
+The launcher sets up a private Python environment in `.venv` and installs the
+dependencies on the first run (a few seconds); after that it starts immediately.
+Arguments are passed through, e.g. `./pybrowse.sh r/Python`.
+
+To start it from any folder by typing `pybrowse`, link the script into a folder on
+your `PATH` (macOS/Linux), or add the PyBrowse folder to `PATH` (Windows):
+
+```
+ln -s "$PWD/pybrowse.sh" /usr/local/bin/pybrowse
+```
+
+Prefer to manage Python yourself? `pip install -r requirements.txt` and
+`python main.py` work too. On Windows, `requirements.txt` also installs
+`windows-curses`, which provides the terminal library Python lacks there.
 
 ### PyCharm (Windows 11, macOS, Linux)
 

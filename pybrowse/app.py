@@ -488,6 +488,7 @@ def dump(browser: Browser, address: str, width: int) -> int:
         print("\nLinks")
         for item in links:
             print(f"  {item.number}. {sanitize(item.url)}")
+    sys.stdout.flush()  # surface a closed pipe here rather than at interpreter exit
     return 0
 
 
@@ -516,6 +517,9 @@ def main(argv: list[str] | None = None) -> int:
         browser = Browser(config, home)
         try:
             return dump(browser, args.address or config.get("homepage"), max(20, args.width))
+        except BrokenPipeError:  # output piped into a command that stopped reading, e.g. head
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            return 0
         finally:
             browser.shutdown()
 
