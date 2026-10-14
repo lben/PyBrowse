@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .config import Config
+from .config import Config, mask_password
 
 log = logging.getLogger("pybrowse")
 
@@ -60,6 +60,9 @@ class Fetcher:
             })
             self._local.session = session
         session.headers["User-Agent"] = self.config.get("user_agent")
+        proxy = self.config.get("proxy")
+        # Empty keeps requests' default: the HTTP(S)_PROXY variables or the OS proxy settings.
+        session.proxies = {"http": proxy, "https": proxy} if proxy else {}
         return session
 
     def fetch(self, url: str, method: str = "GET", data=None, cancelled=lambda: False) -> Response:
@@ -75,6 +78,8 @@ class Fetcher:
         try:
             with self._session().request(method, url, data=data, timeout=(timeout, timeout),
                                          stream=True, allow_redirects=True) as resp:
+                if resp.status_code == 407:  # a plain-http request refused by the proxy itself
+                    raise FetchError(self._proxy_hint("the proxy asked for a username and password"))
                 chunks, size, truncated = [], 0, False
                 for chunk in resp.iter_content(64 * 1024):
                     chunks.append(chunk)
@@ -98,13 +103,23 @@ class Fetcher:
         except requests.exceptions.TooManyRedirects:
             raise FetchError("too many redirects") from None
         except requests.exceptions.SSLError as exc:
-            raise FetchError(f"secure connection failed: {exc}") from None
+            raise FetchError(f"secure connection failed: {_root_cause(exc)}\n"
+                             "If your network inspects HTTPS traffic, point the REQUESTS_CA_BUNDLE "
+                             "environment variable at your organisation's certificate file.") from None
+        except requests.exceptions.ProxyError as exc:
+            raise FetchError(self._proxy_hint(f"proxy error: {_root_cause(exc)}")) from None
         except requests.exceptions.ConnectionError as exc:
-            raise FetchError(f"could not connect: {_root_cause(exc)}") from None
+            raise FetchError(self._proxy_hint(f"could not connect: {_root_cause(exc)}")) from None
         except (requests.exceptions.RequestException, ValueError) as exc:
             raise FetchError(f"request failed: {exc}") from None
         self.save_cookies()
         return result
+
+    def _proxy_hint(self, message: str) -> str:
+        proxy = self.config.get("proxy")
+        if not proxy:
+            return message
+        return f"{message}\n(using proxy {mask_password(proxy)}; press c to change the proxy setting)"
 
     def save_cookies(self) -> None:
         with self._save_lock:

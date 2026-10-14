@@ -150,6 +150,23 @@ Set `PYBROWSE_HOME` to use another folder.
 | `max_page_mb` | `5` | largest page downloaded |
 | `history_limit` | `100` | back/forward entries kept per tab |
 | `user_agent` | `PyBrowse/0.1 ...` | sent to websites |
+| `proxy` | empty | proxy for all connections; empty uses the system proxy settings |
+
+### Behind a corporate proxy
+
+Press `c`, set `proxy` to your proxy address, for example
+`http://proxy.example.com:8080` or `http://user:password@proxy.example.com:8080`,
+and save. Every connection, including searches and the Reddit mirrors, then goes
+through it. The password is shown as `***` on the settings page and the settings
+file is readable only by your user account.
+
+When `proxy` is empty, PyBrowse uses the `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+environment variables, or on Windows and macOS the system proxy settings.
+
+If pages fail with "secure connection failed", your network probably inspects HTTPS
+traffic with its own certificate. Point the `REQUESTS_CA_BUNDLE` environment
+variable at your organisation's certificate file (a `.pem`/`.crt` file your IT
+department can provide) before starting PyBrowse.
 
 Bookmarks (`bookmarks.json`), cookies (`cookies.txt`) and a small rotating log
 (`pybrowse.log`) live in the same folder.

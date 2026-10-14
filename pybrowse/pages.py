@@ -6,7 +6,7 @@ from html import escape
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 
-from .config import SETTINGS
+from .config import SETTINGS, mask_password
 from .document import Document
 from .render import render_html
 
@@ -92,6 +92,9 @@ def handle(browser: "Browser", tab: "Tab", url: str, method: str, data) -> tuple
             notice = "; ".join(errors) or "Settings reset to defaults."
         elif method == "POST" and data:
             changes = {key: value for key, value in data if key in SETTINGS}
+            current = browser.config.get("proxy")
+            if changes.get("proxy") == mask_password(current):  # the masked password was left as is
+                changes["proxy"] = current
             errors = browser.config.update(changes)
             notice = "Not saved: " + "; ".join(errors) if errors else "Settings saved."
         browser.message = notice
@@ -160,6 +163,8 @@ def config_page(browser: "Browser", notice: str = "") -> Document:
         value = browser.config.get(key)
         if isinstance(value, list):
             value = ", ".join(value)
+        elif key == "proxy":
+            value = mask_password(value)
         rows.append(f'<p>{escape(key)}: <input type="text" name="{escape(key)}" value="{escape(str(value))}">'
                     f"<br>{escape(description)}</p>")
     body = (

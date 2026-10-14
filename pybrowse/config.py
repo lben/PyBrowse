@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger("pybrowse")
 
@@ -37,6 +37,9 @@ SETTINGS: dict[str, tuple[object, str]] = {
     "history_limit": (100, "Back/forward entries kept per tab (1-10000)."),
     "user_agent": ("PyBrowse/0.1 (text-mode browser; +https://github.com/lben/PyBrowse)",
                    "User-Agent sent to websites. Some sites block browsers that pretend to be Chrome."),
+    "proxy": ("", "Proxy for all connections, e.g. http://proxy.example.com:8080 or "
+                  "http://user:password@proxy.example.com:8080. Empty uses the system proxy settings "
+                  "(HTTP_PROXY/HTTPS_PROXY variables, or the Windows proxy settings)."),
 }
 _INT_RANGES = {"width": (0, 1000), "timeout": (1, 300), "max_page_mb": (1, 100), "history_limit": (1, 10000)}
 
@@ -91,7 +94,8 @@ def _http_url(value: str) -> bool:
         parts = urlsplit(value)
     except ValueError:
         return False
-    return parts.scheme in ("http", "https") and bool(parts.hostname)
+    return (parts.scheme in ("http", "https") and bool(parts.hostname)
+            and not any(ch.isspace() for ch in parts.hostname))
 
 
 def validate(name: str, value):
@@ -124,7 +128,26 @@ def validate(name: str, value):
         raise ValueError("homepage must be an http(s) URL or an about: page")
     if name == "user_agent" and not text:
         raise ValueError("user_agent cannot be empty")
+    if name == "proxy" and text:
+        if "://" not in text:
+            text = "http://" + text  # corporate proxies are usually given as host:port
+        if not urlsplit(text).scheme in ("http", "https") or not _http_url(text):
+            raise ValueError("proxy must be an http(s) address like http://proxy.example.com:8080")
     return text
+
+
+def mask_password(url: str) -> str:
+    """The URL with any password replaced by ***, for showing on screen."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.password:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host += f":{parts.port}"
+    return urlunsplit(parts._replace(netloc=f"{parts.username or ''}:***@{host}"))
 
 
 class Config:
