@@ -38,8 +38,10 @@ SETTINGS: dict[str, tuple[object, str]] = {
     "user_agent": ("PyBrowse/0.1 (text-mode browser; +https://github.com/lben/PyBrowse)",
                    "User-Agent sent to websites. Some sites block browsers that pretend to be Chrome."),
     "proxy": ("", "Proxy for all connections, e.g. http://proxy.example.com:8080 or "
-                  "http://user:password@proxy.example.com:8080. Empty uses the system proxy settings "
-                  "(HTTP_PROXY/HTTPS_PROXY variables, or the Windows proxy settings)."),
+                  "http://user:password@proxy.example.com:8080. Proxies that use the Windows login "
+                  "(NTLM/Kerberos) work too: on Windows your login is used automatically, elsewhere give "
+                  "DOMAIN\\user:password. Empty uses the system proxy settings (HTTP_PROXY/HTTPS_PROXY "
+                  "variables, or the Windows proxy settings)."),
     "ca_bundle": ("", "Certificate file (.pem/.crt) used to verify HTTPS sites, for networks that inspect "
                       "HTTPS traffic with their own certificate. Empty uses the built-in certificates "
                       "(or the REQUESTS_CA_BUNDLE variable if set)."),

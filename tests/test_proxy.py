@@ -4,40 +4,85 @@ import base64
 import json
 import select
 import socket
+import sys
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from conftest import text_of, wait
+import spnego
+import spnego.exceptions
+from conftest import FIXTURES, Site, text_of, wait
 
 from pybrowse.config import mask_password, validate
 from pybrowse.document import Link
 
 
 class Proxy:
-    """A forwarding HTTP proxy that optionally demands Basic authentication."""
+    """A forwarding HTTP proxy that optionally demands a login.
 
-    def __init__(self, password=None):
+    `password`: require Basic authentication for user "user".
+    `windows_login`: require the NTLM/Negotiate handshake instead, checked against the
+    accounts in the NTLM_USER_FILE that the `ntlm_proxy` fixture sets up. `close_first`
+    makes it drop the connection after its first refusal, as some proxies do.
+    """
+
+    def __init__(self, password=None, windows_login=False, close_first=False):
         self.requests = []
+        self.schemes_used = []
         proxy = self
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"  # the login handshake needs the connection kept open
+
             def log_message(self, *args):
                 pass
 
+            def setup(self):
+                super().setup()
+                self.context = None
+                self.logged_in = False
+
+            def refuse(self, *challenges, close=False):
+                self.send_response(407)
+                for challenge in challenges:
+                    self.send_header("Proxy-Authenticate", challenge)
+                self.send_header("Content-Length", "0")
+                if close:
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
+                self.end_headers()
+                return True
+
             def refused(self):
+                if windows_login:
+                    return self.refused_windows_login()
                 if not password:
                     return False
                 expected = "Basic " + base64.b64encode(f"user:{password}".encode()).decode()
                 if self.headers.get("Proxy-Authorization") == expected:
                     return False
-                self.send_response(407)
-                self.send_header("Proxy-Authenticate", 'Basic realm="corp"')
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return True
+                return self.refuse('Basic realm="corp"')
+
+            def refused_windows_login(self):
+                if self.logged_in:  # the handshake authenticates the whole connection
+                    return False
+                scheme, _, token = (self.headers.get("Proxy-Authorization") or "").partition(" ")
+                if scheme not in ("NTLM", "Negotiate") or not token:
+                    return self.refuse("Negotiate", "NTLM", close=close_first)
+                proxy.schemes_used.append(scheme)
+                if self.context is None:
+                    self.context = spnego.server(hostname="127.0.0.1", service="HTTP", protocol=scheme.lower())
+                try:
+                    reply = self.context.step(base64.b64decode(token))
+                except spnego.exceptions.SpnegoError:  # wrong password or domain
+                    self.context = None
+                    return self.refuse("Negotiate", "NTLM")
+                if self.context.complete:
+                    self.logged_in = True
+                    return False
+                return self.refuse(f"{scheme} {base64.b64encode(reply).decode()}")
 
             def do_CONNECT(self):  # https goes through a tunnel
                 proxy.requests.append("CONNECT " + self.path)
@@ -87,6 +132,86 @@ def proxy():
     yield p
     p.server.shutdown()
     p.server.server_close()
+
+
+@pytest.fixture
+def ntlm_proxy(tmp_path, monkeypatch, request):
+    accounts = tmp_path / "accounts.txt"
+    accounts.write_text("CORP:user:s3cret\n")
+    monkeypatch.setenv("NTLM_USER_FILE", str(accounts))  # pyspnego's server-side account list
+    p = Proxy(windows_login=True, close_first=getattr(request, "param", False))
+    yield p
+    p.server.shutdown()
+    p.server.server_close()
+
+
+@pytest.fixture
+def https_site():
+    s = Site(tls=True)
+    yield s
+    s.server.shutdown()
+    s.server.server_close()
+
+
+LOGIN = "http://CORP%5Cuser:s3cret@"  # DOMAIN\user, with the backslash URL-encoded
+CERT = str(FIXTURES / "localhost-cert.pem")
+
+
+@pytest.mark.parametrize("ntlm_proxy", [False, True], ids=["keeps connection", "closes after first refusal"],
+                         indirect=True)
+def test_https_through_a_proxy_that_needs_the_windows_login(https_site, ntlm_proxy, make_browser):
+    https_site.page("/secure", "<title>Secure</title><p>intranet</p>")
+    b = make_browser(proxy=LOGIN + ntlm_proxy.url[len("http://"):], ca_bundle=CERT)
+    tab = b.new_tab(https_site.url + "/secure")
+    assert wait(b, tab).title == "Secure"
+    assert ntlm_proxy.schemes_used[:1] == ["Negotiate"]  # preferred over plain NTLM
+    assert ntlm_proxy.requests[0].startswith("CONNECT ")
+    b.navigate(tab, https_site.url + "/secure")  # a second page reuses the logged-in connection
+    assert wait(b, tab).title == "Secure"
+
+
+def test_plain_http_through_a_proxy_that_needs_the_windows_login(site, ntlm_proxy, make_browser):
+    site.page("/page", "<title>Plain</title>")
+    b = make_browser(proxy=LOGIN + ntlm_proxy.url[len("http://"):])
+    assert wait(b, b.new_tab(site.url + "/page")).title == "Plain"
+    assert ntlm_proxy.schemes_used and site.requests[-1][1] == "/page"
+
+
+def test_wrong_windows_login_is_explained_for_https_and_plain_http(https_site, site, ntlm_proxy, make_browser):
+    https_site.page("/secure", "<title>Secure</title>")
+    site.page("/page", "<title>Plain</title>")
+    b = make_browser(proxy="http://CORP%5Cuser:wrong@" + ntlm_proxy.url[len("http://"):], ca_bundle=CERT)
+    for url in (https_site.url + "/secure", site.url + "/page"):
+        text = text_of(wait(b, b.new_tab(url)))
+        assert "the proxy did not accept the username and password in the proxy setting" in text, text
+        assert "Negotiate login" in text and "wrong" not in text
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows always has a login to offer")
+def test_missing_login_details_are_explained(https_site, ntlm_proxy):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    # In a separate process: the test proxy's account file would otherwise be found by the
+    # browser side too, since pyspnego reads NTLM_USER_FILE for both roles.
+    script = """
+import pathlib, sys, tempfile
+from pybrowse.config import Config
+from pybrowse.net import FetchError, Fetcher
+home = pathlib.Path(tempfile.mkdtemp())
+config = Config(home / "config.json")
+assert config.update({"proxy": sys.argv[1], "ca_bundle": sys.argv[2]}) == []
+try:
+    Fetcher(config, home / "cookies.txt").fetch(sys.argv[3])
+    print("LOADED")
+except FetchError as exc:
+    print(exc)
+"""
+    env = {k: v for k, v in os.environ.items() if k != "NTLM_USER_FILE"}
+    result = subprocess.run([sys.executable, "-c", script, ntlm_proxy.url, CERT, https_site.url + "/secure"],
+                            cwd=str(Path(__file__).resolve().parent.parent), env=env, capture_output=True, text=True)
+    assert "this system has none to offer" in result.stdout and "DOMAIN\\user:password" in result.stdout, result
 
 
 def test_pages_are_fetched_through_the_proxy_with_its_credentials(site, proxy, make_browser):

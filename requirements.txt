@@ -1,4 +1,5 @@
 requests>=2.31
 beautifulsoup4>=4.12
 wcwidth>=0.2.6
+pyspnego>=0.10
 windows-curses>=2.3.2; sys_platform == "win32"

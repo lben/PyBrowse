@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from . import proxyauth
 from .config import Config, mask_password
 
 log = logging.getLogger("pybrowse")
@@ -69,6 +70,9 @@ class Fetcher:
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
                 "Accept-Language": "en-US,en;q=0.8",
             })
+            for scheme in ("http://", "https://"):  # proxies that use the Windows login handshake
+                session.mount(scheme, proxyauth.ProxyLoginAdapter())
+            session.hooks["response"].append(proxyauth.response_hook)
             self._local.session = session
         session.headers["User-Agent"] = self.config.get("user_agent")
         return session
@@ -89,54 +93,76 @@ class Fetcher:
         # per-request ones. Empty settings fall back to those system defaults.
         proxies = {"http": proxy, "https": proxy} if proxy else None
         verify = self.config.get("ca_bundle") or True
-        try:
-            with self._session().request(method, url, data=data, timeout=(timeout, timeout), stream=True,
-                                         allow_redirects=True, proxies=proxies, verify=verify) as resp:
-                if resp.status_code == 407:  # a plain-http request refused by the proxy itself
-                    raise FetchError("the proxy asked for a username and password", self._proxy_hint(url),
-                                     proxy_failed=True)
-                chunks, size, truncated = [], 0, False
-                for chunk in resp.iter_content(64 * 1024):
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size >= limit:
-                        truncated = True
-                        break
-                    if cancelled():
-                        raise FetchError("cancelled")
-                    if time.monotonic() > deadline:
-                        raise FetchError(f"the server took longer than {timeout * 3} seconds to send the page")
-                content_type = resp.headers.get("Content-Type", "")
-                encoding = requests.utils.get_encoding_from_headers(resp.headers)
-                if encoding == "ISO-8859-1" and "charset" not in content_type.lower():
-                    encoding = None  # requests' text/* default; let the page's <meta> decide
-                result = Response(url=resp.url, status=resp.status_code,
-                                  content_type=content_type.split(";")[0].strip().lower(),
-                                  encoding=encoding, body=b"".join(chunks)[:limit], truncated=truncated)
-        except requests.exceptions.Timeout:
-            raise FetchError(f"the server did not answer within {timeout} seconds") from None
-        except requests.exceptions.TooManyRedirects:
-            raise FetchError("too many redirects") from None
-        except requests.exceptions.SSLError as exc:
-            raise FetchError(f"secure connection failed: {_root_cause(exc)}", self._tls_hint()) from None
-        except requests.exceptions.ConnectionError as exc:  # includes ProxyError
-            log.warning("could not fetch %s: %r", url, exc)
-            to_proxy = isinstance(exc, requests.exceptions.ProxyError)
-            lookup = _name_lookup_failure(exc)
-            if lookup:
-                host, reason = lookup
-                if host is None:
-                    host = urlsplit(self._proxy_for(url) if to_proxy else url).hostname
-                server = "the proxy server" if to_proxy else "the server"
-                message = f"could not find {server} {host} (name lookup failed: {reason})"
-            else:
-                message = f"{'proxy error' if to_proxy else 'could not connect'}: {_root_cause(exc)}"
-            raise FetchError(message, self._proxy_hint(url), proxy_failed=to_proxy) from None
-        except (requests.exceptions.RequestException, ValueError, OSError) as exc:
-            # OSError: requests could not read the ca_bundle file
-            raise FetchError(f"request failed: {exc}", self._tls_hint()) from None
+        for attempt in (1, 2):
+            try:
+                return self._request(method, url, data, timeout, limit, deadline, proxies, verify, cancelled)
+            except requests.exceptions.Timeout:
+                raise FetchError(f"the server did not answer within {timeout} seconds") from None
+            except requests.exceptions.TooManyRedirects:
+                raise FetchError("too many redirects") from None
+            except requests.exceptions.SSLError as exc:
+                raise FetchError(f"secure connection failed: {_root_cause(exc)}", self._tls_hint()) from None
+            except requests.exceptions.ConnectionError as exc:  # includes ProxyError
+                chain = list(_chain(exc))
+                if attempt == 1 and any(isinstance(e, proxyauth.ProxyLoginRestart) for e in chain):
+                    continue  # the proxy named its login scheme; the next connection starts with it
+                log.warning("could not fetch %s: %r", url, exc)
+                raise FetchError(*self._connection_failure(url, exc, chain)) from None
+            except (requests.exceptions.RequestException, ValueError, OSError) as exc:
+                # OSError: requests could not read the ca_bundle file
+                raise FetchError(f"request failed: {exc}", self._tls_hint()) from None
+        raise AssertionError("unreachable")
+
+    def _request(self, method, url, data, timeout, limit, deadline, proxies, verify, cancelled) -> Response:
+        with self._session().request(method, url, data=data, timeout=(timeout, timeout), stream=True,
+                                     allow_redirects=True, proxies=proxies, verify=verify) as resp:
+            if resp.status_code == 407:  # a plain-http request refused by the proxy itself
+                offered = proxyauth.challenges(resp.headers.get("Proxy-Authenticate", "").split("\n"))
+                scheme = proxyauth.choose(offered)
+                if scheme and proxies:
+                    login = proxyauth.ProxyLogin(proxies["http"])
+                    login.scheme = scheme
+                    message = login.describe_failure()
+                else:
+                    message = "the proxy asked for a username and password"
+                raise FetchError(message, self._proxy_hint(url), proxy_failed=True)
+            chunks, size, truncated = [], 0, False
+            for chunk in resp.iter_content(64 * 1024):
+                chunks.append(chunk)
+                size += len(chunk)
+                if size >= limit:
+                    truncated = True
+                    break
+                if cancelled():
+                    raise FetchError("cancelled")
+                if time.monotonic() > deadline:
+                    raise FetchError(f"the server took longer than {timeout * 3} seconds to send the page")
+            content_type = resp.headers.get("Content-Type", "")
+            encoding = requests.utils.get_encoding_from_headers(resp.headers)
+            if encoding == "ISO-8859-1" and "charset" not in content_type.lower():
+                encoding = None  # requests' text/* default; let the page's <meta> decide
+            result = Response(url=resp.url, status=resp.status_code,
+                              content_type=content_type.split(";")[0].strip().lower(),
+                              encoding=encoding, body=b"".join(chunks)[:limit], truncated=truncated)
         self.save_cookies()
         return result
+
+    def _connection_failure(self, url: str, exc: Exception, chain: list) -> tuple[str, str, bool]:
+        """(message, hint, proxy_failed) for a failed connection."""
+        login_error = next((e for e in chain if isinstance(e, proxyauth.ProxyLoginError)), None)
+        if login_error:
+            return str(login_error), self._proxy_hint(url), True
+        to_proxy = isinstance(exc, requests.exceptions.ProxyError)
+        lookup = _name_lookup_failure(chain)
+        if lookup:
+            host, reason = lookup
+            if host is None:
+                host = urlsplit(self._proxy_for(url) if to_proxy else url).hostname
+            server = "the proxy server" if to_proxy else "the server"
+            message = f"could not find {server} {host} (name lookup failed: {reason})"
+        else:
+            message = f"{'proxy error' if to_proxy else 'could not connect'}: {_root_cause(exc)}"
+        return message, self._proxy_hint(url), to_proxy
 
     def _proxy_for(self, url: str) -> str:
         """The proxy that applies to `url`: the setting, else the system proxy, else ''."""
@@ -192,14 +218,14 @@ def _chain(exc: BaseException):
             continue
         seen.add(id(current))
         yield current
-        for inner in (current.__cause__, current.__context__, getattr(current, "reason", None), *current.args):
+        for inner in (current.__cause__, current.__context__, getattr(current, "reason", None),
+                      getattr(current, "original_error", None), *current.args):
             if isinstance(inner, BaseException):
                 pending.append(inner)
 
 
-def _name_lookup_failure(exc: BaseException) -> tuple[str | None, str] | None:
+def _name_lookup_failure(chain: list) -> tuple[str | None, str] | None:
     """(host if known, reason) when a DNS lookup failed, e.g. Windows error 11001."""
-    chain = list(_chain(exc))
     gai = next((e for e in chain if isinstance(e, socket.gaierror)), None)
     if gai is None:
         return None

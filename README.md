@@ -166,6 +166,18 @@ file is readable only by your user account.
 When `proxy` is empty, PyBrowse uses the `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
 environment variables, or on Windows and macOS the system proxy settings.
 
+**Proxies that use the Windows login (NTLM or Kerberos).** Many corporate proxies
+refuse a plain username and password and instead expect the handshake Windows uses.
+PyBrowse does that handshake itself when the proxy asks for it:
+
+* On Windows, set `proxy` to the address alone, such as `http://proxy.example.com:8080`.
+  Your Windows login is used automatically; no password is stored anywhere.
+* On macOS or Linux, or to use a different account, include it in the address as
+  `http://DOMAIN\user:password@proxy.example.com:8080`.
+
+Tools such as Px or Cntlm that sit between you and such a proxy are not needed, but
+they still work: point `proxy` at them (usually `http://127.0.0.1:3128`).
+
 If pages fail with "secure connection failed", your network probably inspects HTTPS
 traffic with its own certificate. Set `ca_bundle` to your organisation's certificate
 file (a `.pem`/`.crt` file your IT department can provide), for example
