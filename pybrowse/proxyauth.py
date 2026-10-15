@@ -18,6 +18,7 @@ import logging
 from urllib.parse import unquote, urlsplit
 
 import requests.adapters
+from bs4 import BeautifulSoup
 from urllib3.connection import HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.poolmanager import ProxyManager
@@ -28,6 +29,8 @@ try:
 except ImportError:  # pragma: no cover - pyspnego is in requirements.txt
     spnego = None
 
+from .document import collapse
+
 log = logging.getLogger("pybrowse")
 
 SCHEMES = ("Negotiate", "NTLM")  # in order of preference; Negotiate can carry Kerberos or NTLM
@@ -36,6 +39,10 @@ MAX_STEPS = 5
 
 class ProxyLoginError(OSError):
     """The proxy login handshake failed; the message is for the user."""
+
+
+class ProxyRefused(OSError):
+    """The proxy refused to open a connection; the message includes its explanation."""
 
 
 class ProxyLoginRestart(OSError):
@@ -68,8 +75,9 @@ def _token(data: bytes | None) -> str:
 class ProxyLogin:
     """What is known about one proxy's login, shared by all connections to it."""
 
-    def __init__(self, proxy_url: str, proxy_headers: dict | None = None):
+    def __init__(self, proxy_url: str, proxy_headers: dict | None = None, user_agent=lambda: ""):
         parts = urlsplit(proxy_url)
+        self.user_agent = user_agent
         self.host = parts.hostname or ""
         self.username = unquote(parts.username) if parts.username else None
         self.password = unquote(parts.password) if parts.password else None
@@ -120,18 +128,29 @@ class ProxyLoginHTTPSConnection(HTTPSConnection):
     def _tunnel(self) -> None:
         login = self.login
         headers = dict(self._tunnel_headers)
+        # Like browsers, say which program is connecting: many corporate proxies refuse
+        # (403) connections that do not identify themselves. Host is required by HTTP/1.1
+        # but only added by Python 3.12 and later.
+        if not any(name.lower() == "host" for name in headers):
+            host = f"[{self._tunnel_host}]" if ":" in self._tunnel_host else self._tunnel_host
+            headers["Host"] = f"{host}:{self._tunnel_port}"
+        if login.user_agent():
+            headers.setdefault("User-Agent", login.user_agent())
         context = None
         scheme = login.scheme
         if scheme:  # known from an earlier connection: start the handshake straight away
             context = login.new_context(scheme)
             headers["Proxy-Authorization"] = f"{scheme} {_token(login.step(context))}"
         for _ in range(MAX_STEPS):
-            status, reason, offered, will_close = self._connect_once(headers)
+            status, reason, offered, will_close, explanation = self._connect_once(headers)
             if status == 200:
                 return
+            log.warning("proxy answered CONNECT %s:%s with %s %s (login offered: %s)", self._tunnel_host,
+                        self._tunnel_port, status, reason, ", ".join(offered) or "none")
             if status != 407:
                 self.close()
-                raise OSError(f"Tunnel connection failed: {status} {reason}")
+                raise ProxyRefused(f"the proxy refused the connection: {status} {reason}"
+                                   + (f". It said: {explanation}" if explanation else ""))
             if context is None:
                 scheme = choose(offered)
                 if scheme is None:  # a Basic-only proxy: nothing more we can do here
@@ -160,7 +179,7 @@ class ProxyLoginHTTPSConnection(HTTPSConnection):
         self.close()
         raise ProxyLoginError("the proxy kept asking for a login")
 
-    def _connect_once(self, headers: dict) -> tuple[int, str, dict, bool]:
+    def _connect_once(self, headers: dict) -> tuple[int, str, dict, bool, str]:
         host = self._tunnel_host
         if host and ":" in host:
             host = f"[{host}]"
@@ -171,9 +190,12 @@ class ProxyLoginHTTPSConnection(HTTPSConnection):
         try:
             response.begin()
             offered = challenges(response.headers.get_all("Proxy-Authenticate") or [])
+            explanation = ""
             if response.status != 200:
-                response.read()  # discard the body so the connection can carry the next step
-            return response.status, response.reason, offered, response.will_close
+                # Read the body so the connection can carry the next step; refusal pages
+                # from corporate proxies usually say why (blocked category, policy, ...).
+                explanation = _page_text(response.read(64 * 1024))
+            return response.status, response.reason, offered, response.will_close, explanation
         finally:
             response.close()  # closes only the reader, not the socket
 
@@ -188,10 +210,21 @@ class ProxyLoginHTTPSConnectionPool(HTTPSConnectionPool):
         return conn
 
 
+def _page_text(body: bytes, limit: int = 400) -> str:
+    """Readable text of an HTML or plain-text error page, shortened and terminal-safe."""
+    if not body.strip():
+        return ""
+    soup = BeautifulSoup(body, "html.parser")
+    for tag in soup(["script", "style", "head"]):
+        tag.decompose()
+    text = collapse(soup.get_text(" ")).strip()
+    return text if len(text) <= limit else text[:limit - 3].rstrip() + "..."
+
+
 class ProxyLoginManager(ProxyManager):
-    def __init__(self, proxy_url: str, **kwargs):
+    def __init__(self, proxy_url: str, user_agent=lambda: "", **kwargs):
         super().__init__(proxy_url, **kwargs)
-        self.login = ProxyLogin(proxy_url, self.proxy_headers)
+        self.login = ProxyLogin(proxy_url, self.proxy_headers, user_agent)
         self.pool_classes_by_scheme = {"http": HTTPConnectionPool, "https": ProxyLoginHTTPSConnectionPool}
 
     def _new_pool(self, scheme, host, port, request_context=None):
@@ -202,10 +235,14 @@ class ProxyLoginManager(ProxyManager):
 
 
 class ProxyLoginAdapter(requests.adapters.HTTPAdapter):
+    def __init__(self, user_agent=lambda: "", **kwargs):
+        self.user_agent = user_agent  # read for every new tunnel, so setting changes apply
+        super().__init__(**kwargs)
+
     def proxy_manager_for(self, proxy: str, **proxy_kwargs):
         if proxy not in self.proxy_manager and not proxy.lower().startswith("socks"):
             self.proxy_manager[proxy] = ProxyLoginManager(
-                proxy, proxy_headers=self.proxy_headers(proxy), num_pools=self._pool_connections,
+                proxy, self.user_agent, proxy_headers=self.proxy_headers(proxy), num_pools=self._pool_connections,
                 maxsize=self._pool_maxsize, block=self._pool_block, **proxy_kwargs)
         return super().proxy_manager_for(proxy, **proxy_kwargs)
 

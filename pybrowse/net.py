@@ -71,7 +71,7 @@ class Fetcher:
                 "Accept-Language": "en-US,en;q=0.8",
             })
             for scheme in ("http://", "https://"):  # proxies that use the Windows login handshake
-                session.mount(scheme, proxyauth.ProxyLoginAdapter())
+                session.mount(scheme, proxyauth.ProxyLoginAdapter(lambda: self.config.get("user_agent")))
             session.hooks["response"].append(proxyauth.response_hook)
             self._local.session = session
         session.headers["User-Agent"] = self.config.get("user_agent")
@@ -149,9 +149,10 @@ class Fetcher:
 
     def _connection_failure(self, url: str, exc: Exception, chain: list) -> tuple[str, str, bool]:
         """(message, hint, proxy_failed) for a failed connection."""
-        login_error = next((e for e in chain if isinstance(e, proxyauth.ProxyLoginError)), None)
-        if login_error:
-            return str(login_error), self._proxy_hint(url), True
+        proxy_said = next((e for e in chain if isinstance(e, (proxyauth.ProxyLoginError, proxyauth.ProxyRefused))),
+                          None)
+        if proxy_said:
+            return str(proxy_said), self._proxy_hint(url), True
         to_proxy = isinstance(exc, requests.exceptions.ProxyError)
         lookup = _name_lookup_failure(chain)
         if lookup:

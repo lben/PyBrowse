@@ -27,9 +27,10 @@ class Proxy:
     makes it drop the connection after its first refusal, as some proxies do.
     """
 
-    def __init__(self, password=None, windows_login=False, close_first=False):
+    def __init__(self, password=None, windows_login=False, close_first=False, policy=None):
         self.requests = []
         self.schemes_used = []
+        self.connect_headers = []
         proxy = self
         direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -86,6 +87,17 @@ class Proxy:
 
             def do_CONNECT(self):  # https goes through a tunnel
                 proxy.requests.append("CONNECT " + self.path)
+                proxy.connect_headers.append(dict(self.headers))
+                if policy and not policy(self.headers):  # e.g. a corporate application filter
+                    body = (b"<html><head><title>Access Denied</title><style>p{}</style></head><body>"
+                            b"<h1>Access Denied</h1><p>Blocked by policy: unrecognised application.</p>"
+                            b"<p>Reference #12345</p></body></html>")
+                    self.send_response(403)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if self.refused():
                     return
                 host, _, port = self.path.rpartition(":")
@@ -303,3 +315,35 @@ def test_name_lookup_failures_say_which_server_could_not_be_found(site, make_bro
     text = text_of(wait(b2, b2.new_tab("http://site.pybrowse-test.invalid/")))
     assert "could not find the server site.pybrowse-test.invalid" in text
     assert "No proxy is in use" in text and "press c and set proxy" in text
+
+
+def identifies_itself(headers):
+    return bool(headers.get("User-Agent")) and bool(headers.get("Host"))
+
+
+def test_connect_tells_the_proxy_which_program_is_connecting(https_site, make_browser):
+    proxy = Proxy(policy=identifies_itself)
+    try:
+        https_site.page("/secure", "<title>Secure</title>")
+        b = make_browser(proxy=proxy.url, ca_bundle=CERT, user_agent="PyBrowse-test/1.0")
+        assert wait(b, b.new_tab(https_site.url + "/secure")).title == "Secure"
+        sent = proxy.connect_headers[0]
+        assert sent["User-Agent"] == "PyBrowse-test/1.0"
+        assert sent["Host"] == https_site.url[len("https://"):]
+    finally:
+        proxy.server.shutdown()
+        proxy.server.server_close()
+
+
+def test_proxy_refusal_shows_the_proxys_explanation(https_site, make_browser):
+    proxy = Proxy(policy=lambda headers: False)
+    try:
+        https_site.page("/secure", "<title>Secure</title>")
+        b = make_browser(proxy=proxy.url, ca_bundle=CERT)
+        text = " ".join(text_of(wait(b, b.new_tab(https_site.url + "/secure"))).split())
+        assert "the proxy refused the connection: 403 Forbidden" in text, text
+        assert "Access Denied Blocked by policy: unrecognised application. Reference #12345" in text, text
+        assert "p{}" not in text
+    finally:
+        proxy.server.shutdown()
+        proxy.server.server_close()
